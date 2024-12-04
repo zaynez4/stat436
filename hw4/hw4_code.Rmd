@@ -1,0 +1,118 @@
+---
+title: "Homework 4 - Stat 436"
+author: "Zayne Zeichert"
+date: "2024-12-3"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringr)
+library(tidyr)
+library(tidytext)
+library(topicmodels)
+library(ggrepel)
+```
+
+Data preparation and topic model creation
+
+```{r, warning = FALSE, results = 'hide', message = FALSE}
+# read in the csv that contains seasons, episodes, and sentences
+got_script = read_csv("https://github.com/zaynez4/stat436/raw/refs/heads/main/hw4/Game_of_Thrones_Script.csv")
+
+# get the sentence with the most amount of words to use when pivoting wider
+# to get column of words
+max_words = length(strsplit(got_script$Sentence[which.max(nchar(got_script$Sentence))], split=" ")[[1]])
+
+# make a vector of words to not include them since they are not useful
+# words and a frequently seen across the show, such as lord and lady
+filter_words = c("", "im", "id", "ill", "ive", "hes", "hell", "shes", "shell", "youre", "youll", "youve", "dont", "didnt", "doesnt", "theyre", "theres", "'cause", "ser", "lord", "lady", "wont", "girl", "boy", "king", "kings", "queen", "grace", "father", "mother", "brother", "brothers", "sister", "sisters", "son", "daughter", "time", "die", "people", "kill", "killed", "lm", "told", "day", "hold", "life")
+
+# adjust the stop words to be all lowercase and remove punctuation
+stop_words_adjusted = stop_words %>% 
+  mutate(word = str_replace_all(str_to_lower(word), "[\\.?!-\\[\\]']", ""))
+
+# create the dataframe to store the document (representing each episode
+# across the 8 seasons) and the word with its count for that episode 
+word_counts = got_script %>% 
+  separate(Sentence, into = as.character(1:max_words), sep=" ") %>% 
+  pivot_longer(cols = "1":as.character(max_words), values_to = "word") %>% 
+  drop_na() %>% 
+  select(Season, Episode, word) %>% 
+  mutate(word = str_replace_all(str_to_lower(word), "[\\.?!-\\[\\]']", "")) %>% 
+  unite(document, Season, Episode) %>% 
+  anti_join(stop_words_adjusted) %>% 
+  count(document, word) %>%
+  filter(!(str_detect(word, "[[:digit:]]")) & 
+           !(word %in% filter_words))
+
+# create the Game of Thrones DocumentTermMatrix
+got_dtm = word_counts %>% 
+  cast_dtm(document, word, n)
+
+# create the LDA from the DTM and use 8 topics for the 8 seasons
+seasons_lda = LDA(got_dtm, k = 8, control = list(seed = 1234))
+
+# get the topics and proportion of words in it
+topics = tidy(seasons_lda, matrix = "beta")
+
+# get the topic membership for each episode
+memberships = tidy(seasons_lda, matrix = "gamma")
+```
+
+Visualization 1 - Top Words per Topic
+
+```{r}
+# get the top 10 terms from each topic
+top_terms = topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  mutate(term = reorder_within(term, beta, topic))
+
+# this will be used to rename the labels in the facet_wrap
+topic_names = as_labeller(
+  c(
+  "1" = 'Topic 1',
+  "2" = 'Topic 2',
+  "3" = 'Topic 3',
+  "4" = 'Topic 4',
+  "5" = 'Topic 5',
+  "6" = 'Topic 6',
+  "7" = 'Topic 7',
+  "8" = 'Topic 8'
+  )
+)
+
+# make bar plot showing the proportion of top 10 words in each topic
+ggplot(top_terms, aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free", labeller = topic_names, ncol=4) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_reordered() +
+  theme(axis.text.x = element_text(angle = 45, size=10, hjust=0.8),
+        axis.text.y = element_text(size = 10)) +
+  labs(title = "Top 10 Words Across 8 Topics in Game of Thrones",
+       subtitle = "8 topics were chosen since there are 8 seasons",
+       x = "Proportion",
+       y = "Word")
+```
+
+Visualization 2 - Topic Membership per Episode in each Season
+
+```{r}
+# adjust the memberships to have a new column for the season and topic
+memberships = memberships %>%
+  mutate(season = str_remove(document, str_extract(document, "_.*$")),
+         topic = factor(topic))
+
+# create a box plot to show what episodes belong in each topic
+ggplot(memberships, aes(topic, gamma, col=topic)) +
+  geom_boxplot() +
+  facet_wrap(~season, ncol = 4) +
+  scale_color_brewer(palette = "Set2") +
+  guides(color = "none") +
+  labs(title = "Topic Proportions for Each Episode in Seasons 1-8",
+       x = "Topic",
+       y = "Membership Proportion")
+
+```
